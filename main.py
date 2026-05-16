@@ -1,9 +1,8 @@
 import os
 import asyncio
-import aiohttp
-import matplotlib.pyplot as plt
-import io
-from datetime import datetime, timedelta
+import json
+import websockets
+from datetime import datetime
 from telegram import Bot
 
 # ============================================
@@ -22,103 +21,26 @@ bot = Bot(token=TOKEN)
 # НАЛАШТУВАННЯ БОТА
 # ============================================
 THRESHOLD_PERCENT = 3.0      # Сповіщати при зміні на 3%
-CHECK_INTERVAL = 5           # Перевіряти кожні 5 секунд
-TIMEFRAME = "15"             # 15-хвилинний таймфрейм (в хвилинах)
 
-# Bitunix API
-BITUNIX_TICKERS_URL = "https://api.bitunix.com/api/v1/market/tickers"
-BITUNIX_KLINE_URL = "https://api.bitunix.com/api/v1/market/kline"
+# Bybit WebSocket адреса для публічних даних (USDT Perpetual)
+BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
 
+# Зберігаємо останню ціну для кожної монети
 last_prices = {}
+# Лічильник для логів
 check_count = 0
 
 # ============================================
-# ФУНКЦІЯ МАЛЮВАННЯ ГРАФІКА
-# ============================================
-async def generate_price_chart(symbol: str, is_pump: bool) -> io.BytesIO:
-    """Генерує 15-хвилинний графік ціни"""
-    try:
-        # Отримуємо дані kline з Bitunix
-        params = {
-            "symbol": symbol,
-            "interval": TIMEFRAME,
-            "limit": 30  # Останні 30 свічок (7.5 годин)
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(BITUNIX_KLINE_URL, params=params) as response:
-                if response.status != 200:
-                    print(f"⚠️ Не вдалося отримати графік для {symbol}")
-                    return None
-                
-                data = await response.json()
-                klines = data.get('data', [])
-                
-                if not klines:
-                    return None
-                
-                # Розпарсимо дані: час закриття, ціна закриття
-                times = []
-                prices = []
-                
-                for kline in klines[-30:]:
-                    # Формат: [час_відкриття, відкриття, максимум, мінімум, закриття, об'єм, час_закриття]
-                    close_time = datetime.fromtimestamp(kline[6] / 1000)
-                    close_price = float(kline[4])
-                    times.append(close_time)
-                    prices.append(close_price)
-                
-                if len(prices) < 5:
-                    return None
-                
-                # Створюємо графік
-                plt.style.use('dark_background')
-                fig, ax = plt.subplots(figsize=(10, 6))
-                
-                # Колір: зелений для PUMP, червоний для DUMP
-                color = '#00ff88' if is_pump else '#ff4444'
-                
-                # Малюємо лінію
-                ax.plot(times, prices, color=color, linewidth=2, marker='o', markersize=4)
-                
-                # Заповнюємо область під графіком
-                ax.fill_between(times, prices, min(prices), alpha=0.3, color=color)
-                
-                # Налаштування
-                ax.set_title(f"{symbol} - 15-хвилинний графік", color='white', fontsize=14, fontweight='bold')
-                ax.set_xlabel("Час", color='white')
-                ax.set_ylabel("Ціна (USDT)", color='white')
-                ax.tick_params(colors='white')
-                ax.grid(True, alpha=0.3, color='gray')
-                
-                # Поворот міток часу
-                plt.xticks(rotation=45)
-                plt.tight_layout()
-                
-                # Зберігаємо в буфер
-                buf = io.BytesIO()
-                plt.savefig(buf, format='png', facecolor='#1a1a2e')
-                buf.seek(0)
-                plt.close()
-                
-                return buf
-                
-    except Exception as e:
-        print(f"❌ Помилка генерації графіка для {symbol}: {e}")
-        return None
-
-# ============================================
-# ФУНКЦІЯ НАДСИЛАННЯ СПОВІЩЕННЯ З ГРАФІКОМ
+# ФУНКЦІЯ НАДСИЛАННЯ СПОВІЩЕННЯ
 # ============================================
 async def send_alert(symbol: str, old_price: float, new_price: float, change_percent: float):
-    """Надсилає сповіщення з графіком в Telegram"""
+    """Надсилає сповіщення про PUMP або DUMP в Telegram"""
     is_pump = change_percent > 0
     direction = "🚀🔥 PUMP" if is_pump else "💀📉 DUMP"
     emoji = "📈" if is_pump else "📉"
     
-    # Текст сповіщення
     message = f"""
-<b>{direction}</b>
+{direction}
 ━━━━━━━━━━━━━━━━━━━━━
 🪙 Монета: <code>{symbol}</code>
 {emoji} Зміна: <b>{change_percent:+.2f}%</b>
@@ -126,110 +48,132 @@ async def send_alert(symbol: str, old_price: float, new_price: float, change_per
 📊 Час: {datetime.now().strftime('%H:%M:%S')}
 ━━━━━━━━━━━━━━━━━━━━━
 """
-    
-    # Генеруємо графік
-    chart = await generate_price_chart(symbol, is_pump)
-    
     try:
-        if chart:
-            # Надсилаємо графік з підписом
-            await bot.send_photo(
-                chat_id=CHAT_ID,
-                photo=chart,
-                caption=message,
-                parse_mode='HTML'
-            )
-            print(f"✅ [СПОВІЩЕННЯ] {direction} {symbol}: {change_percent:+.2f}% (з графіком)")
-        else:
-            # Якщо графік не згенерувався — надсилаємо тільки текст
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text=message,
-                parse_mode='HTML'
-            )
-            print(f"✅ [СПОВІЩЕННЯ] {direction} {symbol}: {change_percent:+.2f}% (без графіка)")
+        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
+        print(f"✅ [СПОВІЩЕННЯ] {direction} {symbol}: {change_percent:+.2f}%")
     except Exception as e:
         print(f"❌ Помилка відправки: {e}")
 
 # ============================================
-# ГОЛОВНА ФУНКЦІЯ МОНІТОРИНГУ
+# ОБРОБКА TICKER-ПОВІДОМЛЕНЬ ВІД BYBIT
 # ============================================
-async def monitor_bitunix():
+async def handle_ticker(data: dict):
+    """Обробляє ticker-дані від Bybit WebSocket"""
     global check_count
+    
+    try:
+        # Парсимо дані Bybit
+        # Формат: {"topic": "tickers.BTCUSDT", "data": {...}}
+        if 'data' not in data:
+            return
+        
+        ticker = data['data']
+        symbol = ticker.get('symbol', '')
+        last_price = float(ticker.get('lastPrice', 0))
+        
+        if not symbol or last_price <= 0:
+            return
+        
+        # Перевіряємо зміну ціни
+        if symbol in last_prices:
+            old_price = last_prices[symbol]
+            if old_price > 0:
+                percent_change = ((last_price - old_price) / old_price) * 100
+                
+                if abs(percent_change) >= THRESHOLD_PERCENT:
+                    await send_alert(symbol, old_price, last_price, percent_change)
+        
+        # Оновлюємо збережену ціну
+        last_prices[symbol] = last_price
+        
+        # Рідко виводимо статус
+        check_count += 1
+        if check_count % 100 == 0:
+            print(f"📊 [СТАТУС] Відстежується {len(last_prices)} монет | {datetime.now().strftime('%H:%M:%S')}")
+            
+    except Exception as e:
+        print(f"❌ Помилка обробки ticker: {e}")
+
+# ============================================
+# ПІДКЛЮЧЕННЯ ДО WEBSOCKET BYBIT
+# ============================================
+async def listen_bybit():
+    """Підключається до Bybit WebSocket і слухає ticker-канали"""
     
     while True:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(BITUNIX_TICKERS_URL, timeout=10) as response:
+            async with websockets.connect(BYBIT_WS_URL, ping_interval=20) as websocket:
+                print("🔌 Підключено до Bybit WebSocket")
+                
+                # Підписуємось на ticker-канали ВСІХ USDT Perpetual ф'ючерсів
+                subscribe_msg = {
+                    "op": "subscribe",
+                    "args": ["tickers.*"]  # * означає всі символи
+                }
+                await websocket.send(json.dumps(subscribe_msg))
+                print("📡 Підписано на ticker-канали всіх монет")
+                
+                # Слухаємо повідомлення
+                async for message in websocket:
+                    data = json.loads(message)
                     
-                    if response.status != 200:
-                        await asyncio.sleep(CHECK_INTERVAL)
-                        continue
-                    
-                    data = await response.json()
-                    tickers = data.get('data', [])
-                    
-                    if not tickers:
-                        await asyncio.sleep(CHECK_INTERVAL)
-                        continue
-                    
-                    for ticker in tickers:
-                        symbol = ticker.get('symbol', '')
-                        try:
-                            last_price = float(ticker.get('lastPrice', 0))
-                        except (ValueError, TypeError):
-                            continue
+                    # Перевіряємо тип повідомлення
+                    if 'topic' in data and data['topic'].startswith('tickers.'):
+                        await handle_ticker(data)
+                    elif 'op' in data and data['op'] == 'pong':
+                        pass  # Heartbeat, ігноруємо
+                    elif 'success' in data:
+                        print(f"✅ Підписка підтверджена: {data}")
                         
-                        if not symbol or last_price <= 0:
-                            continue
-                        
-                        if symbol in last_prices:
-                            old_price = last_prices[symbol]
-                            if old_price > 0:
-                                percent_change = ((last_price - old_price) / old_price) * 100
-                                
-                                if abs(percent_change) >= THRESHOLD_PERCENT:
-                                    await send_alert(symbol, old_price, last_price, percent_change)
-                        
-                        last_prices[symbol] = last_price
-                    
-                    check_count += 1
-                    if check_count % 20 == 0:
-                        print(f"📊 [СТАТУС] Перевірено {len(tickers)} пар | {datetime.now().strftime('%H:%M:%S')}")
-                    
-        except asyncio.TimeoutError:
-            print("⏰ Таймаут...")
+        except websockets.exceptions.ConnectionClosed:
+            print("⚠️ З'єднання втрачено, перепідключення через 5 секунд...")
+            await asyncio.sleep(5)
         except Exception as e:
-            print(f"❌ Помилка: {e}")
-        
-        await asyncio.sleep(CHECK_INTERVAL)
+            print(f"❌ Помилка WebSocket: {e}")
+            await asyncio.sleep(5)
 
 # ============================================
 # ЗАПУСК БОТА
 # ============================================
 async def main():
     print("=" * 50)
-    print("🤖 PUMP/DUMP МОНІТОРИНГ BITUNIX")
-    print("📊 З 15-ХВИЛИННИМИ ГРАФІКАМИ")
+    print("🤖 PUMP/DUMP МОНІТОРИНГ BYBIT")
+    print("📊 USDT Perpetual Futures (ВСІ ПАРИ)")
     print("=" * 50)
     print(f"✅ Telegram бот: підключено")
-    print(f"⚙️ Поріг: {THRESHOLD_PERCENT}%")
-    print(f"📈 Таймфрейм графіка: 15 хвилин")
+    print(f"⚙️ Поріг спрацювання: {THRESHOLD_PERCENT}%")
+    print(f"🔗 WebSocket: {BYBIT_WS_URL}")
     print("=" * 50)
     
+    # Відправляємо тестове повідомлення
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="🤖 **PUMP/DUMP Бот запущено!**\n\n📊 Моніторинг Bitunix\n📈 15-хвилинні графіки\n⚡ Поріг: 3%",
+            text=f"""🤖 **PUMP/DUMP Бот для Bybit запущено!**
+
+📊 **Налаштування:**
+• Біржа: Bybit (USDT Perpetual)
+• Поріг спрацювання: {THRESHOLD_PERCENT}%
+• Моніторинг: ВСІ ф'ючерсні пари
+• З'єднання: WebSocket (реальний час)
+
+🔔 Очікую на стрибки цін...""",
             parse_mode='Markdown'
         )
-        print("✅ Тестове повідомлення відправлено!")
+        print("✅ Тестове повідомлення відправлено в Telegram!")
     except Exception as e:
-        print(f"❌ Помилка: {e}")
+        print(f"❌ Помилка відправки тестового: {e}")
         return
     
-    print("🎯 Починаю моніторинг...")
-    await monitor_bitunix()
+    print("🎯 Починаю моніторинг Bybit через WebSocket...")
+    print("💡 Коли буде PUMP або DUMP на 3% - отримаєш сповіщення")
+    print("=" * 50)
+    
+    # Запускаємо WebSocket моніторинг
+    await listen_bybit()
 
+# ============================================
+# ТОЧКА ВХОДУ
+# ============================================
 if __name__ == "__main__":
     asyncio.run(main())
