@@ -14,7 +14,8 @@ MAX_PUMP = 50.0
 CHECK_INTERVAL = 5
 TIME_WINDOW = 900
 
-KUCOIN_URL = "https://api.kucoin.com/api/v1/market/allTickers"
+# KuCoin Futures API (ТІЛЬКИ Ф'ЮЧЕРСИ)
+KUCOIN_FUTURES_URL = "https://api-futures.kucoin.com/api/v1/allTickers"
 
 coins_data = {}
 all_symbols = []
@@ -39,22 +40,24 @@ async def send_alert(symbol, old_price, new_price, change, count):
 
 async def monitor():
     global all_symbols
-    print("🔄 Підключення до KuCoin API...")
+    print("🔄 Підключення до KuCoin Futures API (тільки ф'ючерси)...")
     
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(KUCOIN_URL, timeout=15) as response:
+                async with session.get(KUCOIN_FUTURES_URL, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
+                        
                         if data.get('code') == '200000':
                             tickers = data.get('data', {}).get('ticker', [])
                             
+                            # Фільтруємо тільки USDT ф'ючерси
                             usdt_tickers = [t for t in tickers if t.get('symbol', '').endswith('USDT')]
                             
                             if not all_symbols:
                                 all_symbols = [t.get('symbol') for t in usdt_tickers]
-                                print(f"📋 Знайдено {len(all_symbols)} USDT пар")
+                                print(f"📋 Знайдено {len(all_symbols)} USDT-M Ф'ЮЧЕРСІВ на KuCoin")
                                 
                                 for t in usdt_tickers:
                                     try:
@@ -65,9 +68,9 @@ async def monitor():
                                 
                                 await bot.send_message(
                                     chat_id=CHAT_ID,
-                                    text=f"""🤖 **PUMP/DUMP Бот (KuCoin) запущено!**
+                                    text=f"""🤖 **PUMP/DUMP Бот (KuCoin Futures) запущено!**
 
-📊 **Моніторинг:** {len(all_symbols)} USDT пар
+📊 **Моніторинг:** {len(all_symbols)} USDT-M Ф'ЮЧЕРСІВ
 ⚡ **Діапазон:** {MIN_PUMP}% - {MAX_PUMP}%
 ⏱️ **Часове вікно:** {TIME_WINDOW//60} хвилин
 🔄 **Повторні сигнали:** ✅
@@ -105,14 +108,18 @@ async def monitor():
                                 else:
                                     coins_data[sym] = {'price': price, 'time': now, 'count': 0}
                             
-                            print(f"📊 Перевірено {len(usdt_tickers)} пар | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
+                            print(f"📊 Перевірено {len(usdt_tickers)} Ф'ЮЧЕРСІВ | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
+                        else:
+                            print(f"⚠️ Помилка API: {data.get('msg')}")
+                    else:
+                        print(f"❌ HTTP {response.status}")
         except Exception as e:
             print(f"❌ Помилка: {e}")
         await asyncio.sleep(CHECK_INTERVAL)
 
 async def main():
     print("=" * 50)
-    print("🤖 PUMP/DUMP KUCOIN")
+    print("🤖 PUMP/DUMP KUCOIN FUTURES (ТІЛЬКИ USDT-M Ф'ЮЧЕРСИ)")
     print("=" * 50)
     await monitor()
 
