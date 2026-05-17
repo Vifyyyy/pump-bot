@@ -14,8 +14,8 @@ MAX_PUMP = 50.0
 CHECK_INTERVAL = 5
 TIME_WINDOW = 900
 
-# KuCoin Futures API
-KUCOIN_FUTURES_URL = "https://api-futures.kucoin.com/api/v1/allTickers"
+# MEXC Futures API
+MEXC_FUTURES_URL = "https://contract.mexc.com/api/v1/contract/ticker"
 
 coins_data = {}
 all_symbols = []
@@ -35,108 +35,81 @@ async def send_alert(symbol, old_price, new_price, change, count):
 🔄 Сигнал #{count}
 ━━━━━━━━━━━━━━━━━━━━━
 """
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
-        print(f"✅ {dir_text} {symbol}: {change:+.2f}%")
-    except Exception as e:
-        print(f"❌ Помилка: {e}")
+    await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
+    print(f"✅ {dir_text} {symbol}: {change:+.2f}%")
 
 async def monitor():
     global all_symbols
-    print("🔄 Підключення до KuCoin Futures API...")
+    print("🔄 Підключення до MEXC Futures API...")
     
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(KUCOIN_FUTURES_URL, timeout=15) as response:
+                async with session.get(MEXC_FUTURES_URL, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
-                        print(f"📡 Отримано відповідь від KuCoin")
                         
-                        # Перевіряємо різні формати відповіді
-                        tickers = []
-                        
-                        if isinstance(data, dict):
-                            if data.get('code') == '200000':
-                                tickers_data = data.get('data', {})
-                                if isinstance(tickers_data, dict):
-                                    tickers = tickers_data.get('ticker', [])
-                                elif isinstance(tickers_data, list):
-                                    tickers = tickers_data
-                        elif isinstance(data, list):
-                            tickers = data
-                        else:
-                            print(f"⚠️ Невідомий формат: {type(data)}")
-                            await asyncio.sleep(CHECK_INTERVAL)
-                            continue
-                        
-                        if not tickers:
-                            print("⚠️ Немає даних про tickers")
-                            await asyncio.sleep(CHECK_INTERVAL)
-                            continue
-                        
-                        # Фільтруємо тільки USDT ф'ючерси
-                        usdt_tickers = []
-                        for t in tickers:
-                            if isinstance(t, dict):
-                                symbol = t.get('symbol', '')
-                                if symbol.endswith('USDT'):
-                                    usdt_tickers.append(t)
-                        
-                        if not all_symbols:
-                            all_symbols = [t.get('symbol') for t in usdt_tickers]
-                            print(f"📋 Знайдено {len(all_symbols)} USDT-M ф'ючерсів на KuCoin")
+                        if data.get('success') and data.get('code') == 200:
+                            tickers = data.get('data', [])
                             
-                            for t in usdt_tickers:
-                                try:
-                                    p = float(t.get('last', 0))
-                                    if p > 0:
-                                        coins_data[t.get('symbol')] = {'price': p, 'time': datetime.now(), 'count': 0}
-                                except: pass
+                            usdt_tickers = [t for t in tickers if t.get('symbol', '').endswith('USDT')]
                             
-                            await bot.send_message(
-                                chat_id=CHAT_ID,
-                                text=f"""🤖 **PUMP/DUMP Бот (KuCoin Futures) запущено!**
+                            if not all_symbols:
+                                all_symbols = [t.get('symbol') for t in usdt_tickers]
+                                print(f"📋 Знайдено {len(all_symbols)} USDT-M ф'ючерсів на MEXC")
+                                
+                                for t in usdt_tickers:
+                                    try:
+                                        p = float(t.get('lastPrice', 0))
+                                        if p > 0:
+                                            coins_data[t.get('symbol')] = {'price': p, 'time': datetime.now(), 'count': 0}
+                                    except: pass
+                                
+                                await bot.send_message(
+                                    chat_id=CHAT_ID,
+                                    text=f"""🤖 **PUMP/DUMP Бот (MEXC Futures) запущено!**
 
-📊 **Моніторинг:** {len(all_symbols)} USDT-M ф'ючерсних пар
+📊 **Моніторинг:** {len(all_symbols)} USDT-M ф'ючерсів
 ⚡ **Діапазон:** {MIN_PUMP}% - {MAX_PUMP}%
 ⏱️ **Часове вікно:** {TIME_WINDOW//60} хвилин
 🔄 **Повторні сигнали:** ✅
 
 🔔 Очікую на стрибки цін...""",
-                                parse_mode='Markdown'
-                            )
-                        
-                        now = datetime.now()
-                        changes = 0
-                        
-                        for t in usdt_tickers:
-                            sym = t.get('symbol')
-                            try:
-                                price = float(t.get('last', 0))
-                            except: continue
-                            if price <= 0: continue
+                                    parse_mode='Markdown'
+                                )
                             
-                            old = coins_data.get(sym)
-                            if old and old.get('price'):
-                                old_p = old['price']
-                                if old_p != price:
-                                    change = ((price - old_p) / old_p) * 100
-                                    if MIN_PUMP <= abs(change) <= MAX_PUMP:
-                                        last_t = old.get('time', now)
-                                        if (now - last_t).total_seconds() <= TIME_WINDOW:
-                                            cnt = old.get('count', 0) + 1
-                                            await send_alert(sym, old_p, price, change, cnt)
-                                            coins_data[sym] = {'price': price, 'time': now, 'count': cnt}
-                                            changes += 1
+                            now = datetime.now()
+                            changes = 0
+                            
+                            for t in usdt_tickers:
+                                sym = t.get('symbol')
+                                try:
+                                    price = float(t.get('lastPrice', 0))
+                                except: continue
+                                if price <= 0: continue
+                                
+                                old = coins_data.get(sym)
+                                if old and old.get('price'):
+                                    old_p = old['price']
+                                    if old_p != price:
+                                        change = ((price - old_p) / old_p) * 100
+                                        if MIN_PUMP <= abs(change) <= MAX_PUMP:
+                                            last_t = old.get('time', now)
+                                            if (now - last_t).total_seconds() <= TIME_WINDOW:
+                                                cnt = old.get('count', 0) + 1
+                                                await send_alert(sym, old_p, price, change, cnt)
+                                                coins_data[sym] = {'price': price, 'time': now, 'count': cnt}
+                                                changes += 1
+                                            else:
+                                                coins_data[sym] = {'price': price, 'time': now, 'count': 0}
                                         else:
                                             coins_data[sym] = {'price': price, 'time': now, 'count': 0}
-                                    else:
-                                        coins_data[sym] = {'price': price, 'time': now, 'count': 0}
-                            else:
-                                coins_data[sym] = {'price': price, 'time': now, 'count': 0}
-                        
-                        print(f"📊 Перевірено {len(usdt_tickers)} ф'ючерсів | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
+                                else:
+                                    coins_data[sym] = {'price': price, 'time': now, 'count': 0}
+                            
+                            print(f"📊 Перевірено {len(usdt_tickers)} ф'ючерсів | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
+                        else:
+                            print(f"⚠️ Помилка API: {data}")
                     else:
                         print(f"❌ HTTP {response.status}")
         except Exception as e:
@@ -145,7 +118,7 @@ async def monitor():
 
 async def main():
     print("=" * 50)
-    print("🤖 PUMP/DUMP KUCOIN FUTURES (USDT-M)")
+    print("🤖 PUMP/DUMP MEXC FUTURES (USDT-M)")
     print("=" * 50)
     await monitor()
 
