@@ -24,8 +24,8 @@ MAX_PUMP = 50.0
 CHECK_INTERVAL = 5
 TIME_WINDOW = 900
 
-# MEXC Futures API (тільки ф'ючерси)
-MEXC_FUTURES_URL = "https://contract.mexc.com/api/v1/contract/ticker"
+# Альтернативний MEXC Futures API
+MEXC_FUTURES_URL = "https://api.mexc.com/api/v3/ticker/24hr"
 
 coins_data = {}
 all_symbols = []
@@ -64,7 +64,7 @@ async def send_alert(symbol, old_price, new_price, change, count):
 async def monitor():
     global all_symbols
     
-    print("🔄 Підключення до MEXC Futures API...")
+    print("🔄 Підключення до MEXC API...")
     
     while True:
         try:
@@ -73,17 +73,15 @@ async def monitor():
                     if response.status == 200:
                         data = await response.json()
                         
-                        if data.get('success') and data.get('code') == 200:
-                            tickers = data.get('data', [])
-                            
-                            # Фільтруємо тільки USDT-M ф'ючерси
-                            usdt_futures = [t for t in tickers if t.get('symbol', '').endswith('USDT')]
+                        if isinstance(data, list):
+                            # Фільтруємо тільки USDT пари (це можуть бути як спот так і ф'ючерси)
+                            usdt_pairs = [t for t in data if t.get('symbol', '').endswith('USDT')]
                             
                             if not all_symbols:
-                                all_symbols = [t.get('symbol') for t in usdt_futures]
-                                print(f"📋 ✅ Знайдено {len(all_symbols)} USDT-M ф'ючерсів")
+                                all_symbols = [t.get('symbol') for t in usdt_pairs]
+                                print(f"📋 ✅ Знайдено {len(all_symbols)} USDT пар")
                                 
-                                for ticker in usdt_futures:
+                                for ticker in usdt_pairs:
                                     symbol = ticker.get('symbol')
                                     try:
                                         price = float(ticker.get('lastPrice', 0))
@@ -94,9 +92,9 @@ async def monitor():
                                 
                                 await bot.send_message(
                                     chat_id=CHAT_ID,
-                                    text=f"""🤖 **PUMP/DUMP Бот (MEXC Futures) запущено!**
+                                    text=f"""🤖 **PUMP/DUMP Бот (MEXC) запущено!**
 
-📊 **Моніторинг:** {len(all_symbols)} USDT-M ф'ючерсів
+📊 **Моніторинг:** {len(all_symbols)} USDT пар
 ⚡ **Діапазон:** {MIN_PUMP}% - {MAX_PUMP}%
 ⏱️ **Часове вікно:** {TIME_WINDOW//60} хвилин
 🔄 **Повторні сигнали:** ✅
@@ -108,7 +106,7 @@ async def monitor():
                             now = datetime.now()
                             changes = 0
                             
-                            for ticker in usdt_futures:
+                            for ticker in usdt_pairs:
                                 symbol = ticker.get('symbol')
                                 try:
                                     price = float(ticker.get('lastPrice', 0))
@@ -139,9 +137,9 @@ async def monitor():
                                 elif price > 0:
                                     coins_data[symbol] = {'price': price, 'time': now, 'count': 0}
                             
-                            print(f"📊 Перевірено {len(usdt_futures)} ф'ючерсів | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
+                            print(f"📊 Перевірено {len(usdt_pairs)} пар | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
                         else:
-                            print(f"⚠️ Помилка API")
+                            print(f"⚠️ Невідомий формат")
                     else:
                         print(f"❌ HTTP {response.status}")
                         
@@ -155,8 +153,7 @@ async def monitor():
 # ============================================
 async def main():
     print("=" * 55)
-    print("🤖 PUMP/DUMP МОНІТОРИНГ MEXC FUTURES")
-    print("📡 ТІЛЬКИ USDT-M Ф'ЮЧЕРСНІ ПАРИ")
+    print("🤖 PUMP/DUMP МОНІТОРИНГ MEXC")
     print(f"⏱️ Часове вікно: {TIME_WINDOW//60} хвилин")
     print("=" * 55)
     
