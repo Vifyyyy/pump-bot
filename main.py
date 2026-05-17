@@ -18,41 +18,52 @@ if not TOKEN or not CHAT_ID:
 
 bot = Bot(token=TOKEN)
 
-# Параметри моніторингу
-MIN_PUMP_PERCENT = 3.0      # Мінімальний рух 3%
-MAX_PUMP_PERCENT = 50.0     # Максимальний рух 50%
-TIME_WINDOW_SECONDS = 600   # 10 хвилин
+MIN_PUMP_PERCENT = 3.0
+MAX_PUMP_PERCENT = 50.0
+TIME_WINDOW_SECONDS = 600
 
 BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
-
-# Дані монет
 coins_data = {}
 
 # ============================================
-# ОТРИМАННЯ ВСІХ Ф'ЮЧЕРСНИХ МОНЕТ З BYBIT
+# ОТРИМАННЯ ВСІХ МОНЕТ (З ПРАВИЛЬНИМИ ЗАГОЛОВКАМИ)
 # ============================================
 async def get_all_symbols():
-    """Отримує ВСІ USDT Perpetual ф'ючерсні пари з Bybit"""
+    """Отримує ВСІ монети з Bybit з правильними заголовками"""
+    
+    # Заголовки, щоб Bybit думав, що це браузер
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Source': 'web'
+    }
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get("https://api.bybit.com/v5/market/tickers?category=linear") as response:
+            async with session.get(
+                "https://api.bybit.com/v5/market/tickers?category=linear",
+                headers=headers,
+                timeout=30
+            ) as response:
+                print(f"📡 Статус: {response.status}")
+                
                 if response.status == 200:
                     data = await response.json()
                     if data.get('retCode') == 0:
                         symbols = [item['symbol'] for item in data['result']['list']]
-                        print(f"📋 Знайдено {len(symbols)} ф'ючерсних монет на Bybit")
+                        print(f"📋 ✅ Знайдено {len(symbols)} ф'ючерсних монет")
                         return symbols
                     else:
-                        print(f"⚠️ API помилка: {data.get('retMsg')}")
+                        print(f"⚠️ Помилка: {data.get('retMsg')}")
                 else:
-                    print(f"⚠️ HTTP помилка: {response.status}")
+                    print(f"⚠️ HTTP {response.status}")
+                    
     except Exception as e:
-        print(f"❌ Помилка при з'єднанні: {e}")
+        print(f"❌ Помилка: {e}")
     
-    # Якщо не вдалося отримати список - базовий варіант (аварійний режим)
-    print("⚠️ Використовую базовий список монет (аварійний режим)")
-    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", 
-            "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT"]
+    print("❌ НЕ ВДАЛОСЯ ОТРИМАТИ СПИСОК!")
+    return None
 
 # ============================================
 # НАДСИЛАННЯ СПОВІЩЕННЯ
@@ -91,29 +102,13 @@ async def check_and_alert(symbol: str, old_price: float, new_price: float):
     change_percent = ((new_price - old_price) / old_price) * 100
     abs_change = abs(change_percent)
     
-    # Перевіряємо діапазон 3%-50%
     if abs_change < MIN_PUMP_PERCENT or abs_change > MAX_PUMP_PERCENT:
         return False
     
     coin = coins_data.get(symbol, {})
-    last_price = coin.get('price')
-    
-    # Перевіряємо чи був рух в межах 10 хвилин
-    if last_price is None:
-        # Перша ціна
-        coins_data[symbol] = {
-            'price': new_price,
-            'timestamp': now,
-            'last_alert': now,
-            'alert_count': 0
-        }
-        await send_alert(symbol, old_price, new_price, change_percent, 0)
-        return True
-    
-    time_since_last = (now - coin.get('timestamp', now)).total_seconds()
+    time_since_last = (now - coin.get('timestamp', now)).total_seconds() if coin.get('timestamp') else TIME_WINDOW_SECONDS + 1
     
     if time_since_last <= TIME_WINDOW_SECONDS:
-        # Рух в межах 10 хвилин
         new_count = coin.get('alert_count', 0) + 1
         coins_data[symbol] = {
             'price': new_price,
@@ -124,7 +119,6 @@ async def check_and_alert(symbol: str, old_price: float, new_price: float):
         await send_alert(symbol, old_price, new_price, change_percent, new_count)
         return True
     else:
-        # Повільний рух - оновлюємо базову ціну
         coins_data[symbol] = {
             'price': new_price,
             'timestamp': now,
@@ -137,27 +131,31 @@ async def check_and_alert(symbol: str, old_price: float, new_price: float):
 # ПІДКЛЮЧЕННЯ ДО WEBSOCKET
 # ============================================
 async def listen_bybit(symbols):
-    print(f"📡 Починаю моніторинг {len(symbols)} ф'ючерсних монет...")
+    if not symbols:
+        print("❌ Немає списку монет!")
+        return
+    
+    print(f"📡 Моніторинг {len(symbols)} монет...")
     
     while True:
         try:
             async with websockets.connect(BYBIT_WS_URL, ping_interval=20) as websocket:
-                print("🔌 Підключено до Bybit WebSocket")
+                print("🔌 Підключено до WebSocket")
                 
-                # Підписуємось на кожну монету окремо
+                # Підписуємось на всі монети
                 subscribe_msg = {
                     "op": "subscribe",
                     "args": [f"tickers.{s}" for s in symbols]
                 }
                 await websocket.send(json.dumps(subscribe_msg))
-                print(f"✅ Підписку надіслано на {len(symbols)} каналів")
+                print(f"✅ Підписка на {len(symbols)} каналів")
                 
                 async for message in websocket:
                     try:
                         data = json.loads(message)
                         
                         if 'success' in data:
-                            print("✅ Підписка підтверджена")
+                            print("✅ Підтверджено")
                         elif 'topic' in data and 'tickers.' in data['topic']:
                             ticker = data.get('data', {})
                             symbol = ticker.get('symbol', '')
@@ -179,7 +177,8 @@ async def listen_bybit(symbols):
                                         'last_alert': None,
                                         'alert_count': 0
                                     }
-                                    print(f"📊 {symbol}: додано, ціна {last_price}")
+                                    if len(coins_data) % 50 == 0:
+                                        print(f"📊 Завантажено {len(coins_data)}/{len(symbols)}")
                                     
                     except json.JSONDecodeError:
                         continue
@@ -196,33 +195,32 @@ async def listen_bybit(symbols):
 async def main():
     print("=" * 55)
     print("🤖 PUMP/DUMP МОНІТОРИНГ BYBIT")
-    print("📊 ВСІ Ф'ЮЧЕРСНІ МОНЕТИ")
     print("=" * 55)
     
-    # Отримуємо всі монети з Bybit
     all_symbols = await get_all_symbols()
-    print(f"⚙️ Моніторинг: {len(all_symbols)} монет")
-    print(f"⚙️ Діапазон: {MIN_PUMP_PERCENT}% - {MAX_PUMP_PERCENT}%")
-    print(f"⚙️ Часове вікно: {TIME_WINDOW_SECONDS//60} хвилин")
-    print("=" * 55)
     
-    try:
+    if not all_symbols:
+        print("❌ НЕ ВДАЛОСЯ ЗАВАНТАЖИТИ МОНЕТИ!")
         await bot.send_message(
             chat_id=CHAT_ID,
-            text=f"""🤖 **PUMP/DUMP Бот запущено!**
+            text="❌ Не вдалося завантажити список монет з Bybit API.\nBybit блокує Railway IP."
+        )
+        return
+    
+    print(f"✅ {len(all_symbols)} монет завантажено")
+    print("=" * 55)
+    
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=f"""🤖 **PUMP/DUMP Бот запущено!**
 
-📊 **Налаштування:**
-• Моніторинг: <b>{len(all_symbols)}</b> ф'ючерсних монет
-• Діапазон: {MIN_PUMP_PERCENT}% - {MAX_PUMP_PERCENT}%
-• Часове вікно: {TIME_WINDOW_SECONDS//60} хвилин
-• Повторні сигнали: ✅
+📊 Моніторинг: <b>{len(all_symbols)}</b> ф'ючерсних монет
+⚡ Діапазон: {MIN_PUMP_PERCENT}% - {MAX_PUMP_PERCENT}%
+⏱️ Часове вікно: {TIME_WINDOW_SECONDS//60} хвилин
 
 🔔 Очікую на стрибки цін...""",
-            parse_mode='HTML'
-        )
-        print("✅ Тестове повідомлення відправлено")
-    except Exception as e:
-        print(f"❌ Помилка Telegram: {e}")
+        parse_mode='HTML'
+    )
     
     await listen_bybit(all_symbols)
 
