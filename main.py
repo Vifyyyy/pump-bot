@@ -24,11 +24,13 @@ MAX_PUMP = 50.0
 CHECK_INTERVAL = 5
 TIME_WINDOW = 900
 
-# MEXC Futures API (працюючий ендпоїнт)
+# Ендпоїнт для отримання списку ВСІХ ф'ючерсів MEXC
+MEXC_FUTURES_INFO_URL = "https://api.mexc.com/api/v1/contract/detail"
+# Ендпоїнт для отримання цін 24hr
 MEXC_TICKER_URL = "https://api.mexc.com/api/v3/ticker/24hr"
 
 coins_data = {}
-all_symbols = []
+all_futures_symbols = []
 
 # ============================================
 # НАДСИЛАННЯ СПОВІЩЕННЯ
@@ -59,99 +61,113 @@ async def send_alert(symbol, old_price, new_price, change, count):
         print(f"❌ Помилка: {e}")
 
 # ============================================
+# ОТРИМАННЯ СПИСКУ ВСІХ Ф'ЮЧЕРСІВ
+# ============================================
+async def get_futures_symbols():
+    """Отримує список ВСІХ USDT-M ф'ючерсних пар з MEXC"""
+    print("🔄 Завантаження списку всіх ф'ючерсних пар MEXC...")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(MEXC_FUTURES_INFO_URL, timeout=30) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('code') == 200:
+                        contracts = data.get('data', [])
+                        # Фільтруємо тільки USDT-M ф'ючерси
+                        symbols = [c.get('symbol') for c in contracts if c.get('symbol', '').endswith('USDT')]
+                        print(f"📋 ✅ Знайдено {len(symbols)} USDT-M ф'ючерсних пар.")
+                        return symbols
+                    else:
+                        print(f"⚠️ Помилка в даних API: {data.get('msg', 'Невідома помилка')}")
+                else:
+                    print(f"❌ HTTP помилка при отриманні списку: {response.status}")
+    except Exception as e:
+        print(f"❌ Помилка: {e}")
+    
+    print("❌ НЕ ВДАЛОСЯ ОТРИМАТИ СПИСОК Ф'ЮЧЕРСІВ.")
+    return None
+
+# ============================================
 # ОСНОВНИЙ МОНІТОРИНГ
 # ============================================
 async def monitor():
-    global all_symbols
+    global all_futures_symbols
     
-    print("🔄 Підключення до MEXC API...")
-    
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(MEXC_TICKER_URL, timeout=15) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        if isinstance(data, list):
-                            # Фільтруємо тільки USDT пари
-                            usdt_tickers = [t for t in data if t.get('symbol', '').endswith('USDT')]
-                            
-                            # Якщо список монет ще не отримано
-                            if not all_symbols:
-                                all_symbols = [t.get('symbol') for t in usdt_tickers]
-                                print(f"📋 ✅ Знайдено {len(all_symbols)} USDT-M ф'ючерсних пар")
-                                
-                                # Ініціалізуємо початкові ціни
-                                for ticker in usdt_tickers:
-                                    symbol = ticker.get('symbol')
-                                    try:
-                                        price = float(ticker.get('lastPrice', 0))
-                                        if price > 0:
-                                            coins_data[symbol] = {'price': price, 'time': datetime.now(), 'count': 0}
-                                    except:
-                                        pass
-                                
-                                print(f"✅ Ініціалізовано {len(coins_data)} монет")
-                                
-                                # Відправляємо повідомлення про запуск
-                                await bot.send_message(
-                                    chat_id=CHAT_ID,
-                                    text=f"""🤖 **PUMP/DUMP Бот (MEXC Futures) запущено!**
+    # 1. Отримуємо список ф'ючерсів
+    all_futures_symbols = await get_futures_symbols()
+    if not all_futures_symbols:
+        await bot.send_message(chat_id=CHAT_ID, text="❌ **КРИТИЧНА ПОМИЛКА:** Не вдалося завантажити список ф'ючерсів MEXC. Бот зупинено.", parse_mode='Markdown')
+        return
 
-📊 **Моніторинг:** {len(all_symbols)} USDT-M ф'ючерсних пар
+    print(f"📡 Починаю моніторинг {len(all_futures_symbols)} USDT-M ф'ючерсів...")
+    print(f"⚙️ Інтервал: {CHECK_INTERVAL}с | Вікно: {TIME_WINDOW//60}хв | Діапазон: {MIN_PUMP}%-{MAX_PUMP}%")
+
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=f"""🤖 **PUMP/DUMP Бот (MEXC Futures) запущено!**
+
+📊 **Моніторинг:** <b>{len(all_futures_symbols)}</b> USDT-M ф'ючерсних пар
 ⚡ **Діапазон:** {MIN_PUMP}% - {MAX_PUMP}%
 ⏱️ **Часове вікно:** {TIME_WINDOW//60} хвилин
 🔄 **Повторні сигнали:** ✅
 
 🔔 Очікую на стрибки цін...""",
-                                    parse_mode='Markdown'
-                                )
+        parse_mode='HTML'
+    )
+
+    # Основний цикл моніторингу
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(MEXC_TICKER_URL, timeout=15) as response:
+                    if response.status == 200:
+                        all_tickers = await response.json()
+                        now = datetime.now()
+                        changes_found = 0
+
+                        # Фільтруємо тільки ті ticker, які є в нашому списку ф'ючерсів
+                        for ticker in all_tickers:
+                            symbol = ticker.get('symbol')
+                            if symbol not in all_futures_symbols:
+                                continue
                             
-                            now = datetime.now()
-                            changes = 0
-                            
-                            for ticker in usdt_tickers:
-                                symbol = ticker.get('symbol')
-                                try:
-                                    price = float(ticker.get('lastPrice', 0))
-                                except:
-                                    continue
-                                
-                                if price <= 0:
-                                    continue
-                                
-                                old = coins_data.get(symbol)
-                                if old and old.get('price'):
-                                    old_price = old['price']
-                                    if old_price != price:
-                                        change = ((price - old_price) / old_price) * 100
-                                        abs_change = abs(change)
-                                        
-                                        if MIN_PUMP <= abs_change <= MAX_PUMP:
-                                            last_time = old.get('time', now)
-                                            if (now - last_time).total_seconds() <= TIME_WINDOW:
-                                                count = old.get('count', 0) + 1
-                                                await send_alert(symbol, old_price, price, change, count)
-                                                coins_data[symbol] = {'price': price, 'time': now, 'count': count}
-                                                changes += 1
-                                            else:
-                                                coins_data[symbol] = {'price': price, 'time': now, 'count': 0}
+                            try:
+                                current_price = float(ticker.get('lastPrice', 0))
+                            except (ValueError, TypeError):
+                                continue
+
+                            if current_price <= 0:
+                                continue
+
+                            old_data = coins_data.get(symbol)
+                            if old_data:
+                                old_price = old_data.get('price')
+                                if old_price and old_price != current_price:
+                                    change_percent = ((current_price - old_price) / old_price) * 100
+                                    abs_change = abs(change_percent)
+                                    
+                                    if MIN_PUMP <= abs_change <= MAX_PUMP:
+                                        last_time = old_data.get('time', now)
+                                        if (now - last_time).total_seconds() <= TIME_WINDOW:
+                                            alert_count = old_data.get('count', 0) + 1
+                                            await send_alert(symbol, old_price, current_price, change_percent, alert_count)
+                                            coins_data[symbol] = {'price': current_price, 'time': now, 'count': alert_count}
+                                            changes_found += 1
                                         else:
-                                            coins_data[symbol] = {'price': price, 'time': now, 'count': 0}
-                                elif price > 0:
-                                    coins_data[symbol] = {'price': price, 'time': now, 'count': 0}
-                            
-                            print(f"📊 Перевірено {len(usdt_tickers)} пар | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
-                        else:
-                            print(f"⚠️ Невідомий формат: {type(data)}")
-                    else:
-                        print(f"❌ HTTP {response.status}")
+                                            coins_data[symbol] = {'price': current_price, 'time': now, 'count': 0}
+                                    else:
+                                        coins_data[symbol] = {'price': current_price, 'time': now, 'count': 0}
+                                else:
+                                    coins_data[symbol] = {'price': current_price, 'time': now, 'count': 0}
+                            else:
+                                coins_data[symbol] = {'price': current_price, 'time': now, 'count': 0}
                         
-        except asyncio.TimeoutError:
-            print("⏰ Таймаут, повторюю...")
+                        print(f"📊 Перевірено {len(all_futures_symbols)} ф'ючерсів | змін: {changes_found} | {datetime.now().strftime('%H:%M:%S')}")
+                    else:
+                        print(f"❌ HTTP помилка: {response.status}")
+                        
         except Exception as e:
-            print(f"❌ Помилка: {e}")
+            print(f"❌ Помилка в циклі моніторингу: {e}")
         
         await asyncio.sleep(CHECK_INTERVAL)
 
@@ -161,7 +177,7 @@ async def monitor():
 async def main():
     print("=" * 55)
     print("🤖 PUMP/DUMP МОНІТОРИНГ MEXC FUTURES")
-    print("📡 ВСІ USDT-M Ф'ЮЧЕРСНІ ПАРИ")
+    print("📡 ТІЛЬКИ USDT-M Ф'ЮЧЕРСНІ ПАРИ")
     print(f"⏱️ Часове вікно: {TIME_WINDOW//60} хвилин")
     print("=" * 55)
     
