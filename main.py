@@ -2,7 +2,6 @@ import os
 import asyncio
 import json
 import websockets
-import aiohttp
 from datetime import datetime
 from telegram import Bot
 
@@ -18,42 +17,16 @@ if not TOKEN or not CHAT_ID:
 
 bot = Bot(token=TOKEN)
 
-MIN_PUMP = 3.0          # Мінімальний рух 3%
-MAX_PUMP = 50.0         # Максимальний рух 50%
-TIME_WINDOW = 600       # 10 хвилин
+MIN_PUMP = 3.0
+MAX_PUMP = 50.0
+TIME_WINDOW = 600
 
 # Binance Futures WebSocket (всі монети в одному каналі)
 BINANCE_WS = "wss://fstream.binance.com/ws/!ticker@arr"
 
 # Дані монет
 coins_data = {}
-all_symbols = []
-
-# ============================================
-# ОТРИМАННЯ ВСІХ Ф'ЮЧЕРСНИХ МОНЕТ
-# ============================================
-async def get_all_futures_symbols():
-    """Отримує актуальний список всіх ф'ючерсних пар з Binance"""
-    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=30) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    symbols = [item['symbol'] for item in data['symbols'] if item['status'] == 'TRADING']
-                    
-                    # Фільтруємо тільки USDT пари
-                    usdt_symbols = [s for s in symbols if s.endswith('USDT')]
-                    print(f"📋 ✅ Знайдено {len(usdt_symbols)} ф'ючерсних монет (USDT)")
-                    return usdt_symbols
-                else:
-                    print(f"❌ HTTP помилка: {response.status}")
-    except Exception as e:
-        print(f"❌ Помилка: {e}")
-    
-    print("❌ НЕ ВДАЛОСЯ ОТРИМАТИ СПИСОК МОНЕТ!")
-    return None
+all_symbols = set()
 
 # ============================================
 # ВІДПРАВКА СПОВІЩЕННЯ
@@ -84,42 +57,32 @@ async def send_alert(symbol, old_price, new_price, change, count):
         print(f"❌ Помилка: {e}")
 
 # ============================================
-# ОСНОВНИЙ МОНІТОРИНГ
+# ОСНОВНИЙ МОНІТОРИНГ (ТІЛЬКИ WEBSOCKET)
 # ============================================
 async def monitor():
-    global all_symbols
+    print("🔌 Підключення до Binance WebSocket...")
     
-    # Отримуємо список всіх монет
-    all_symbols = await get_all_futures_symbols()
-    if not all_symbols:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text="❌ Не вдалося отримати список монет з Binance! Бот зупинено."
-        )
-        return
-    
-    print(f"📡 Починаю моніторинг {len(all_symbols)} монет...")
-    
-    # Відправляємо повідомлення про запуск
-    await bot.send_message(
-        chat_id=CHAT_ID,
-        text=f"""🤖 **PUMP/DUMP Бот (Binance Futures) запущено!**
-
-📊 **Моніторинг:** <b>{len(all_symbols)}</b> ф'ючерсних монет
-⚡ **Діапазон:** {MIN_PUMP}% - {MAX_PUMP}%
-⏱️ **Часове вікно:** 10 хвилин
-🔄 **Повторні сигнали:** ✅
-📡 **Нові монети:** автоматично додаються
-
-🔔 Очікую на стрибки цін...""",
-        parse_mode='HTML'
-    )
-    
-    # Підключаємося до WebSocket
     while True:
         try:
             async with websockets.connect(BINANCE_WS, ping_interval=20) as ws:
-                print("🔌 Підключено до Binance WebSocket")
+                print("✅ Підключено! Отримую всі ціни...")
+                
+                # Відправляємо повідомлення про запуск
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text="""🤖 **PUMP/DUMP Бот (Binance Futures) запущено!**
+
+📊 **Моніторинг:** ВСІ ф'ючерсні монети (через WebSocket)
+⚡ **Діапазон:** 3% - 50%
+⏱️ **Часове вікно:** 10 хвилин
+🔄 **Повторні сигнали:** ✅
+
+📡 **Збір монет:** автоматично з потоку даних
+
+🔔 Очікую на стрибки цін...""",
+                    parse_mode='Markdown'
+                )
+                print("✅ Тестове повідомлення відправлено")
                 
                 async for message in ws:
                     try:
@@ -128,9 +91,15 @@ async def monitor():
                         for ticker in tickers:
                             symbol = ticker.get('s', '')
                             
-                            # Фільтруємо тільки USDT пари
+                            # Фільтруємо USDT пари
                             if not symbol.endswith('USDT'):
                                 continue
+                            
+                            # Додаємо символ до списку
+                            if symbol not in all_symbols:
+                                all_symbols.add(symbol)
+                                if len(all_symbols) % 100 == 0:
+                                    print(f"📊 Знайдено {len(all_symbols)} монет...")
                             
                             try:
                                 price = float(ticker.get('c', 0))
@@ -181,7 +150,7 @@ async def monitor():
 async def main():
     print("=" * 55)
     print("🤖 PUMP/DUMP МОНІТОРИНГ BINANCE FUTURES")
-    print("📡 ВСІ ф'ючерсні монети (автооновлення)")
+    print("📡 WebSocket (обхід блокування 451)")
     print("=" * 55)
     
     await monitor()
