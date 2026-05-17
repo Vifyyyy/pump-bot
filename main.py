@@ -22,8 +22,7 @@ MAX_PUMP = 50.0
 TIME_WINDOW = 600
 
 # Binance Futures WebSocket (всі монети в одному каналі)
-BINANCE_WS = "wss://fstream.binance.com/ws/!ticker@arr"
-
+BINANCE_WS = "wss://stream.binancefuture.com/ws/!ticker@arr"
 # Дані монет
 coins_data = {}
 all_symbols = set()
