@@ -19,10 +19,10 @@ bot = Bot(token=TOKEN)
 # ============================================
 # ПАРАМЕТРИ МОНІТОРИНГУ
 # ============================================
-MIN_PUMP = 3.0          # Мінімальний рух 3%
-MAX_PUMP = 50.0         # Максимальний рух 50%
-CHECK_INTERVAL = 5      # Перевіряємо кожні 5 секунд
-TIME_WINDOW = 900       # 15 хвилин
+MIN_PUMP = 3.0
+MAX_PUMP = 50.0
+CHECK_INTERVAL = 5
+TIME_WINDOW = 900
 
 BITUNIX_TICKERS_URL = "https://api.bitunix.com/openapi/v1/market/tickers"
 
