@@ -20,59 +20,48 @@ bot = Bot(token=TOKEN)
 
 MIN_PUMP = 3.0
 MAX_PUMP = 50.0
-TIME_WINDOW = 600  # 10 хвилин
+TIME_WINDOW = 600
 
-# Дані монет
 coins = {}
 
 # ============================================
-# 1. ОТРИМАННЯ ВСІХ Ф'ЮЧЕРСНИХ МОНЕТ (ЧЕРЕЗ REST API)
+# ОТРИМАННЯ ВСІХ Ф'ЮЧЕРСНИХ МОНЕТ
 # ============================================
-async def get_all_linear_symbols():
-    """
-    Отримує ВСІ USDT Perpetual ф'ючерсні монети з Bybit.
-    Використовує офіційний ендпоінт /v5/market/instruments-info.
-    """
+async def get_all_symbols():
     url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
     
-    # Додаємо заголовки, щоб імітувати браузер
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json',
-        'Referer': 'https://www.bybit.com/',
     }
 
-    print("📡 Завантаження списку всіх ф'ючерсних монет з Bybit...")
+    print("📡 Завантаження списку всіх монет...")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=30) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get('retCode') == 0:
-                        # Отримуємо список символів
                         symbols = [item['symbol'] for item in data['result']['list']]
-                        print(f"📋 ✅ Успішно знайдено {len(symbols)} ф'ючерсних монет.")
+                        print(f"📋 ✅ Знайдено {len(symbols)} монет")
                         return symbols
                     else:
-                        print(f"⚠️ Помилка API: {data.get('retMsg')}")
+                        print(f"⚠️ Помилка: {data.get('retMsg')}")
                 else:
-                    print(f"❌ HTTP помилка: {response.status}")
-    except asyncio.TimeoutError:
-        print("❌ Таймаут підключення до Bybit API")
-    except aiohttp.ClientConnectorError as e:
-        print(f"❌ Помилка з'єднання: {e}")
+                    print(f"❌ HTTP {response.status}")
     except Exception as e:
-        print(f"❌ Невідома помилка: {e}")
-
-    print("❌ НЕ ВДАЛОСЯ ОТРИМАТИ СПИСОК МОНЕТ. БОТ НЕ МОЖЕ ПРАЦЮВАТИ.")
+        print(f"❌ Помилка: {e}")
+    
+    print("❌ НЕ ВДАЛОСЯ ОТРИМАТИ СПИСОК!")
     return None
 
 # ============================================
-# 2. ВІДПРАВКА СПОВІЩЕННЯ
+# ВІДПРАВКА СПОВІЩЕННЯ
 # ============================================
 async def send_alert(symbol, old_price, new_price, change, count):
     is_pump = change > 0
     dir_text = "🚀🔥 PUMP" if is_pump else "💀📉 DUMP"
+    
     if new_price < 1:
         price_str = f"{new_price:.8f}"
     else:
@@ -90,40 +79,35 @@ async def send_alert(symbol, old_price, new_price, change, count):
 """
     try:
         await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
-        print(f"✅ {dir_text} {symbol}: {change:+.2f}% (сигнал #{count})")
+        print(f"✅ {dir_text} {symbol}: {change:+.2f}%")
     except Exception as e:
-        print(f"❌ Помилка відправки: {e}")
+        print(f"❌ Помилка: {e}")
 
 # ============================================
-# 3. ПІДКЛЮЧЕННЯ ДО WEBSOCKET ТА МОНІТОРИНГ
+# МОНІТОРИНГ
 # ============================================
 async def monitor_symbols(symbols):
-    """Підключається до WebSocket та стежить за цінами всіх монет."""
     ws_url = "wss://stream.bybit.com/v5/public/linear"
     
     while True:
         try:
             async with websockets.connect(ws_url, ping_interval=20) as ws:
-                print("🔌 Підключено до Bybit WebSocket")
+                print("🔌 Підключено до WebSocket")
                 
-                # Підписуємось на всі монети (розбиваємо на частини, щоб не перевантажити)
-                batch_size = 50
-                for i in range(0, len(symbols), batch_size):
-                    batch = symbols[i:i+batch_size]
-                    subscribe_msg = {
-                        "op": "subscribe",
-                        "args": [f"tickers.{s}" for s in batch]
-                    }
-                    await ws.send(json.dumps(subscribe_msg))
+                # Підписуємось на всі монети (по 50 за раз)
+                for i in range(0, len(symbols), 50):
+                    batch = symbols[i:i+50]
+                    msg = {"op": "subscribe", "args": [f"tickers.{s}" for s in batch]}
+                    await ws.send(json.dumps(msg))
                     print(f"📡 Підписано на {len(batch)} монет...")
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.5)
                 
                 print(f"✅ Підписку завершено на {len(symbols)} каналів")
                 
-                # Основний цикл обробки повідомлень
                 async for message in ws:
                     try:
                         data = json.loads(message)
+                        
                         if 'topic' in data and 'tickers.' in data['topic']:
                             ticker = data.get('data', {})
                             symbol = ticker.get('symbol')
@@ -139,20 +123,20 @@ async def monitor_symbols(symbols):
                                 continue
                             
                             now = datetime.now()
-                            old_data = coins.get(symbol)
+                            old = coins.get(symbol)
                             
-                            if old_data:
-                                old_price = old_data.get('price')
+                            if old:
+                                old_price = old.get('price')
                                 if old_price and old_price != price:
                                     change = ((price - old_price) / old_price) * 100
                                     abs_change = abs(change)
                                     
                                     if MIN_PUMP <= abs_change <= MAX_PUMP:
-                                        last_time = old_data.get('time', now)
+                                        last_time = old.get('time', now)
                                         time_diff = (now - last_time).total_seconds()
                                         
                                         if time_diff <= TIME_WINDOW:
-                                            count = old_data.get('count', 0) + 1
+                                            count = old.get('count', 0) + 1
                                             await send_alert(symbol, old_price, price, change, count)
                                             coins[symbol] = {'price': price, 'time': now, 'count': count}
                                         else:
@@ -164,37 +148,31 @@ async def monitor_symbols(symbols):
                             else:
                                 coins[symbol] = {'price': price, 'time': now, 'count': 0}
                                 
-                    except json.JSONDecodeError:
-                        continue
                     except Exception as e:
-                        print(f"⚠️ Помилка обробки: {e}")
+                        print(f"⚠️ Помилка: {e}")
                         
         except Exception as e:
             print(f"❌ WebSocket помилка: {e}")
             await asyncio.sleep(5)
 
 # ============================================
-# 4. ЗАПУСК БОТА
+# ЗАПУСК
 # ============================================
 async def main():
     print("=" * 55)
-    print("🤖 PUMP/DUMP МОНІТОРИНГ BYBIT (ВСІ МОНЕТИ)")
+    print("🤖 PUMP/DUMP МОНІТОРИНГ BYBIT")
     print("=" * 55)
     
-    # 1. Отримуємо всі монети
-    all_symbols = await get_all_linear_symbols()
-    if not all_symbols:
-        await bot.send_message(chat_id=CHAT_ID, text="❌ Не вдалося завантажити список монет! Бот зупинено.")
+    symbols = await get_all_symbols()
+    if not symbols:
+        await bot.send_message(chat_id=CHAT_ID, text="❌ Не вдалося завантажити список монет!")
         return
     
-    print(f"✅ Успішно завантажено {len(all_symbols)} монет.")
-    
-    # 2. Відправляємо тестове повідомлення в Telegram
     await bot.send_message(
         chat_id=CHAT_ID,
         text=f"""🤖 **PUMP/DUMP Бот запущено!**
 
-📊 Моніторинг: <b>{len(all_symbols)}</b> ф'ючерсних монет
+📊 Моніторинг: <b>{len(symbols)}</b> ф'ючерсних монет
 ⚡ Діапазон: {MIN_PUMP}% - {MAX_PUMP}%
 ⏱️ Часове вікно: 10 хвилин
 🔄 Повторні сигнали: ✅
@@ -203,8 +181,7 @@ async def main():
         parse_mode='HTML'
     )
     
-    # 3. Запускаємо моніторинг
-    await monitor_symbols(all_symbols)
+    await monitor_symbols(symbols)
 
 if __name__ == "__main__":
     asyncio.run(main())
