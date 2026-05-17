@@ -14,8 +14,7 @@ MAX_PUMP = 50.0
 CHECK_INTERVAL = 5
 TIME_WINDOW = 900
 
-# MEXC Futures API
-MEXC_FUTURES_URL = "https://contract.mexc.com/api/v1/contract/ticker"
+KUCOIN_URL = "https://api.kucoin.com/api/v1/market/allTickers"
 
 coins_data = {}
 all_symbols = []
@@ -40,36 +39,35 @@ async def send_alert(symbol, old_price, new_price, change, count):
 
 async def monitor():
     global all_symbols
-    print("🔄 Підключення до MEXC Futures API...")
+    print("🔄 Підключення до KuCoin API...")
     
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(MEXC_FUTURES_URL, timeout=15) as response:
+                async with session.get(KUCOIN_URL, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
-                        
-                        if data.get('success') and data.get('code') == 200:
-                            tickers = data.get('data', [])
+                        if data.get('code') == '200000':
+                            tickers = data.get('data', {}).get('ticker', [])
                             
                             usdt_tickers = [t for t in tickers if t.get('symbol', '').endswith('USDT')]
                             
                             if not all_symbols:
                                 all_symbols = [t.get('symbol') for t in usdt_tickers]
-                                print(f"📋 Знайдено {len(all_symbols)} USDT-M ф'ючерсів на MEXC")
+                                print(f"📋 Знайдено {len(all_symbols)} USDT пар")
                                 
                                 for t in usdt_tickers:
                                     try:
-                                        p = float(t.get('lastPrice', 0))
+                                        p = float(t.get('last', 0))
                                         if p > 0:
                                             coins_data[t.get('symbol')] = {'price': p, 'time': datetime.now(), 'count': 0}
                                     except: pass
                                 
                                 await bot.send_message(
                                     chat_id=CHAT_ID,
-                                    text=f"""🤖 **PUMP/DUMP Бот (MEXC Futures) запущено!**
+                                    text=f"""🤖 **PUMP/DUMP Бот (KuCoin) запущено!**
 
-📊 **Моніторинг:** {len(all_symbols)} USDT-M ф'ючерсів
+📊 **Моніторинг:** {len(all_symbols)} USDT пар
 ⚡ **Діапазон:** {MIN_PUMP}% - {MAX_PUMP}%
 ⏱️ **Часове вікно:** {TIME_WINDOW//60} хвилин
 🔄 **Повторні сигнали:** ✅
@@ -84,7 +82,7 @@ async def monitor():
                             for t in usdt_tickers:
                                 sym = t.get('symbol')
                                 try:
-                                    price = float(t.get('lastPrice', 0))
+                                    price = float(t.get('last', 0))
                                 except: continue
                                 if price <= 0: continue
                                 
@@ -107,18 +105,14 @@ async def monitor():
                                 else:
                                     coins_data[sym] = {'price': price, 'time': now, 'count': 0}
                             
-                            print(f"📊 Перевірено {len(usdt_tickers)} ф'ючерсів | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
-                        else:
-                            print(f"⚠️ Помилка API: {data}")
-                    else:
-                        print(f"❌ HTTP {response.status}")
+                            print(f"📊 Перевірено {len(usdt_tickers)} пар | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
         except Exception as e:
             print(f"❌ Помилка: {e}")
         await asyncio.sleep(CHECK_INTERVAL)
 
 async def main():
     print("=" * 50)
-    print("🤖 PUMP/DUMP MEXC FUTURES (USDT-M)")
+    print("🤖 PUMP/DUMP KUCOIN")
     print("=" * 50)
     await monitor()
 
