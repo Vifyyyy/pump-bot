@@ -4,45 +4,36 @@ import aiohttp
 from datetime import datetime
 from telegram import Bot
 
-# ============================================
-# НАЛАШТУВАННЯ
-# ============================================
+# ================= НАЛАШТУВАННЯ =================
 TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHANNEL_ID")
 
 if not TOKEN or not CHAT_ID:
-    print("❌ ПОМИЛКА: Додай BOT_TOKEN та CHANNEL_ID в Railway!")
+    print("❌ Помилка: Додайте BOT_TOKEN та CHANNEL_ID в Railway Variables!")
     exit(1)
 
 bot = Bot(token=TOKEN)
 
-# ============================================
-# ПАРАМЕТРИ МОНІТОРИНГУ
-# ============================================
-MIN_PUMP = 3.0
-MAX_PUMP = 50.0
-CHECK_INTERVAL = 5
-TIME_WINDOW = 900
+# Параметри моніторингу
+MIN_PUMP = 3.0          # Мінімальний рух (%)
+MAX_PUMP = 50.0         # Максимальний рух (%)
+CHECK_INTERVAL = 5      # Частота перевірки (секунд)
+TIME_WINDOW = 900       # Часове вікно для руху (15 хвилин)
 
-# KuCoin Futures API
-KUCOIN_URL = "https://api-futures.kucoin.com/api/v1/allTickers"
+# Ендпоінт Bitunix для списку всіх пар
+BITUNIX_URL = "https://api.bitunix.com/openapi/v1/market/tickers"
 
-coins_data = {}
+# Словник для зберігання попередніх цін (symbol -> price)
+price_cache = {}
 
-# ============================================
-# НАДСИЛАННЯ СПОВІЩЕННЯ
-# ============================================
+# ================= ФУНКЦІЯ СПОВІЩЕННЯ =================
 async def send_alert(symbol, old_price, new_price, change, count):
     is_pump = change > 0
-    dir_text = "🚀🔥 PUMP" if is_pump else "💀📉 DUMP"
-    
-    if new_price < 1:
-        price_str = f"{new_price:.8f}"
-    else:
-        price_str = f"{new_price:.4f}"
+    direction = "🚀🔥 PUMP" if is_pump else "💀📉 DUMP"
+    price_str = f"{new_price:.8f}" if new_price < 1 else f"{new_price:.4f}"
     
     message = f"""
-{dir_text}
+{direction}
 ━━━━━━━━━━━━━━━━━━━━━
 🪙 Монета: <code>{symbol}</code>
 📊 Зміна: <b>{change:+.2f}%</b>
@@ -53,118 +44,87 @@ async def send_alert(symbol, old_price, new_price, change, count):
 """
     try:
         await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
-        print(f"✅ {dir_text} {symbol}: {change:+.2f}%")
+        print(f"✅ Сигнал: {direction} {symbol} ({change:+.2f}%)")
     except Exception as e:
-        print(f"❌ Помилка: {e}")
+        print(f"❌ Помилка відправки: {e}")
 
-# ============================================
-# ОСНОВНИЙ МОНІТОРИНГ
-# ============================================
+# ================= ОСНОВНИЙ МОНІТОРИНГ =================
 async def monitor():
-    print("🔄 Підключення до KuCoin API...")
-    
+    print(f"🚀 Запуск моніторингу Bitunix | Перевірка кожні {CHECK_INTERVAL}с | Вікно: {TIME_WINDOW//60}хв")
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(KUCOIN_URL, timeout=15) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        print(f"📡 Отримано відповідь від KuCoin")
+                async with session.get(BITUNIX_URL, timeout=15) as response:
+                    if response.status != 200:
+                        print(f"⚠️ Помилка HTTP {response.status}")
+                        await asyncio.sleep(CHECK_INTERVAL)
+                        continue
+                    
+                    data = await response.json()
+                    if data.get('code') != 0:
+                        print(f"⚠️ Помилка API: {data.get('msg')}")
+                        await asyncio.sleep(CHECK_INTERVAL)
+                        continue
+                    
+                    tickers = data.get('data', [])
+                    now = datetime.now()
+                    alert_triggered = False
+                    
+                    for ticker in tickers:
+                        symbol = ticker.get('symbol', '')
+                        if not symbol.endswith('USDT'):
+                            continue
+                        try:
+                            current_price = float(ticker.get('lastPrice', 0))
+                        except:
+                            continue
+                        if current_price <= 0:
+                            continue
                         
-                        if data.get('code') == '200000':
-                            tickers_data = data.get('data', {})
-                            
-                            # Перевіряємо формат даних
-                            if isinstance(tickers_data, dict):
-                                tickers = tickers_data.get('ticker', [])
-                            elif isinstance(tickers_data, list):
-                                tickers = tickers_data
-                            else:
-                                print(f"⚠️ Невідомий формат: {type(tickers_data)}")
-                                await asyncio.sleep(CHECK_INTERVAL)
-                                continue
-                            
-                            if not tickers:
-                                print("⚠️ Немає даних про tickers")
-                                await asyncio.sleep(CHECK_INTERVAL)
-                                continue
-                            
-                            now = datetime.now()
-                            changes = 0
-                            
-                            for ticker in tickers:
-                                symbol = ticker.get('symbol', '')
-                                if not symbol.endswith('USDT'):
-                                    continue
+                        # Перевіряємо зміну ціни
+                        if symbol in price_cache:
+                            old_price = price_cache[symbol]
+                            if old_price != current_price:
+                                change_percent = ((current_price - old_price) / old_price) * 100
+                                abs_change = abs(change_percent)
                                 
-                                try:
-                                    price = float(ticker.get('last', 0))
-                                except (ValueError, TypeError):
+                                if MIN_PUMP <= abs_change <= MAX_PUMP:
+                                    # Оновлюємо дані та надсилаємо сигнал
+                                    count = price_cache.get(f"{symbol}_count", 0) + 1
+                                    await send_alert(symbol, old_price, current_price, change_percent, count)
+                                    price_cache[symbol] = current_price
+                                    price_cache[f"{symbol}_count"] = count
+                                    alert_triggered = True
                                     continue
-                                
-                                if price <= 0:
-                                    continue
-                                
-                                old = coins_data.get(symbol)
-                                if old and old.get('price'):
-                                    old_price = old['price']
-                                    if old_price != price:
-                                        change = ((price - old_price) / old_price) * 100
-                                        abs_change = abs(change)
-                                        
-                                        if MIN_PUMP <= abs_change <= MAX_PUMP:
-                                            last_time = old.get('time', now)
-                                            if (now - last_time).total_seconds() <= TIME_WINDOW:
-                                                count = old.get('count', 0) + 1
-                                                await send_alert(symbol, old_price, price, change, count)
-                                                coins_data[symbol] = {'price': price, 'time': now, 'count': count}
-                                                changes += 1
-                                            else:
-                                                coins_data[symbol] = {'price': price, 'time': now, 'count': 0}
-                                        else:
-                                            coins_data[symbol] = {'price': price, 'time': now, 'count': 0}
-                                else:
-                                    coins_data[symbol] = {'price': price, 'time': now, 'count': 0}
-                            
-                            print(f"📊 Перевірено {len(tickers)} пар | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
-                        else:
-                            print(f"⚠️ Помилка API: {data.get('msg')}")
-                    else:
-                        print(f"❌ HTTP {response.status}")
                         
+                        # Якщо сигналу не було, просто оновлюємо ціну (скидаємо лічильник)
+                        if alert_triggered and symbol in price_cache:
+                            continue
+                        price_cache[symbol] = current_price
+                        price_cache[f"{symbol}_count"] = 0
+                    
+                    print(f"📊 Статус: {datetime.now().strftime('%H:%M:%S')} | Монет: {len(tickers)} | Змін: {'Є' if alert_triggered else 'Немає'}")
+                    
         except asyncio.TimeoutError:
-            print("⏰ Таймаут")
+            print("⏰ Таймаут з'єднання")
         except Exception as e:
             print(f"❌ Помилка: {e}")
         
         await asyncio.sleep(CHECK_INTERVAL)
 
-# ============================================
-# ЗАПУСК
-# ============================================
+# ================= ЗАПУСК =================
 async def main():
-    print("=" * 55)
-    print("🤖 PUMP/DUMP МОНІТОРИНГ KUCOIN")
+    print("=" * 50)
+    print("🤖 PUMP/DUMP МОНІТОРИНГ BITUNIX")
     print(f"⏱️ Часове вікно: {TIME_WINDOW//60} хвилин")
-    print("=" * 55)
+    print("=" * 50)
     
-    # Тестове повідомлення
-    try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text=f"""🤖 **PUMP/DUMP Бот (KuCoin) запущено!**
-
-⚡ **Діапазон:** {MIN_PUMP}% - {MAX_PUMP}%
-⏱️ **Часове вікно:** {TIME_WINDOW//60} хвилин
-🔄 **Повторні сигнали:** ✅
-
-🔔 Очікую на стрибки цін...""",
-            parse_mode='Markdown'
-        )
-        print("✅ Тестове повідомлення відправлено")
-    except Exception as e:
-        print(f"❌ Помилка Telegram: {e}")
-    
+    # Повідомлення про запуск
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=f"🤖 **Bitunix Бот запущено!**\n\n⚡ Діапазон: {MIN_PUMP}%–{MAX_PUMP}%\n⏱️ Вікно: {TIME_WINDOW//60} хв\n🔄 Повторні сигнали: ✅\n\n🔔 Стежу за ринком...",
+        parse_mode='Markdown'
+    )
     await monitor()
 
 if __name__ == "__main__":
