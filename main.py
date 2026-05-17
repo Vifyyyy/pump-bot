@@ -5,6 +5,9 @@ import websockets
 from datetime import datetime
 from telegram import Bot
 
+# ============================================
+# НАЛАШТУВАННЯ
+# ============================================
 TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHANNEL_ID")
 
@@ -14,96 +17,161 @@ if not TOKEN or not CHAT_ID:
 
 bot = Bot(token=TOKEN)
 
-MIN_PUMP_PERCENT = 3.0
-MAX_PUMP_PERCENT = 50.0
-TIME_WINDOW_SECONDS = 600
+# Параметри моніторингу
+MIN_PUMP = 3.0          # Мінімальний рух 3%
+MAX_PUMP = 50.0         # Максимальний рух 50%
+TIME_WINDOW = 600       # 10 хвилин (600 секунд)
 
-BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
-coins_data = {}
+BYBIT_WS = "wss://stream.bybit.com/v5/public/linear"
 
-# Список популярних монет (якщо WebSocket не дасть всі)
-DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", 
-                    "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT",
-                    "UNIUSDT", "ATOMUSDT", "LTCUSDT", "BCHUSDT", "NEARUSDT",
-                    "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT"]
+# Зберігаємо дані кожної монети
+coins = {}
 
-async def listen_bybit():
-    print("🔌 Підключаюсь до Bybit WebSocket...")
-    print("📡 Отримую всі монети через WebSocket...")
+# ============================================
+# ВІДПРАВКА СПОВІЩЕННЯ В TELEGRAM
+# ============================================
+async def send_alert(symbol, old_price, new_price, change, count):
+    is_pump = change > 0
+    dir_text = "🚀🔥 PUMP" if is_pump else "💀📉 DUMP"
     
-    all_symbols = set()
+    # Форматуємо ціну (8 знаків для монет дешевших 1$, 4 знаки для дорогих)
+    if new_price < 1:
+        price_str = f"{new_price:.8f}"
+    else:
+        price_str = f"{new_price:.4f}"
     
-    async with websockets.connect(BYBIT_WS_URL, ping_interval=20) as websocket:
-        # Підписуємось на всі ticker-канали через *
-        subscribe_msg = {"op": "subscribe", "args": ["tickers.*"]}
-        await websocket.send(json.dumps(subscribe_msg))
-        print("✅ Підписка на всі канали")
+    message = f"""
+{dir_text}
+━━━━━━━━━━━━━━━━━━━━━
+🪙 Монета: <code>{symbol}</code>
+📊 Зміна: <b>{change:+.2f}%</b>
+💰 Ціна: <b>{price_str}</b> USDT
+🕐 Час: {datetime.now().strftime('%H:%M:%S')}
+🔄 Сигнал #{count}
+━━━━━━━━━━━━━━━━━━━━━
+"""
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
+        print(f"✅ {dir_text} {symbol}: {change:+.2f}% (сигнал #{count})")
+    except Exception as e:
+        print(f"❌ Помилка відправки: {e}")
+
+# ============================================
+# ГОЛОВНИЙ МОНІТОРИНГ
+# ============================================
+async def monitor():
+    print("🔌 Підключення до Bybit WebSocket...")
+    
+    async with websockets.connect(BYBIT_WS, ping_interval=20) as ws:
+        # Підписуємось на ВСІ ticker-канали через *
+        await ws.send(json.dumps({"op": "subscribe", "args": ["tickers.*"]}))
+        print("✅ Підписано на tickers.*")
         
-        # Збираємо монети протягом 10 секунд
-        start_time = datetime.now()
-        while (datetime.now() - start_time).seconds < 10:
+        # Збираємо список ВСІХ монет
+        all_symbols = set()
+        print("📡 Збираю список всіх монет...")
+        
+        start = datetime.now()
+        while (datetime.now() - start).seconds < 15:
             try:
-                message = await asyncio.wait_for(websocket.recv(), timeout=1)
-                data = json.loads(message)
+                msg = await asyncio.wait_for(ws.recv(), timeout=1)
+                data = json.loads(msg)
                 
                 if 'topic' in data and 'tickers.' in data['topic']:
                     symbol = data.get('data', {}).get('symbol')
                     if symbol:
                         all_symbols.add(symbol)
-                        price = data.get('data', {}).get('lastPrice')
-                        if len(all_symbols) % 50 == 0:
+                        if len(all_symbols) % 100 == 0:
                             print(f"📊 Знайдено {len(all_symbols)} монет...")
             except asyncio.TimeoutError:
                 continue
+            except:
+                continue
         
-        symbols_list = list(all_symbols) if all_symbols else DEFAULT_SYMBOLS
-        print(f"📋 ✅ Всього знайдено {len(symbols_list)} монет")
+        symbols_list = list(all_symbols)
+        print(f"📋 ✅ Всього знайдено {len(symbols_list)} ф'ючерсних монет")
         
-        # Перепідписуємось на кожну монету окремо
-        subscribe_msg = {"op": "subscribe", "args": [f"tickers.{s}" for s in symbols_list]}
-        await websocket.send(json.dumps(subscribe_msg))
-        print(f"✅ Підписка на {len(symbols_list)} каналів")
+        # Відправляємо тестове повідомлення в Telegram
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"""🤖 **PUMP/DUMP Бот запущено!**
+
+📊 Моніторинг: <b>{len(symbols_list)}</b> ф'ючерсних монет
+⚡ Діапазон: {MIN_PUMP}% - {MAX_PUMP}%
+⏱️ Часове вікно: 10 хвилин
+🔄 Повторні сигнали: ✅
+
+🔔 Очікую на стрибки цін...""",
+            parse_mode='HTML'
+        )
+        print(f"✅ Тестове повідомлення відправлено")
         
-        # Основний цикл обробки
-        async for message in websocket:
+        # Основний цикл обробки цін
+        async for message in ws:
             try:
                 data = json.loads(message)
+                
                 if 'topic' in data and 'tickers.' in data['topic']:
                     ticker = data.get('data', {})
-                    symbol = ticker.get('symbol', '')
+                    symbol = ticker.get('symbol')
+                    
+                    if not symbol:
+                        continue
+                    
                     try:
-                        last_price = float(ticker.get('lastPrice', 0))
+                        price = float(ticker.get('lastPrice', 0))
                     except:
                         continue
                     
-                    if symbol and last_price > 0:
-                        old = coins_data.get(symbol, {}).get('price')
-                        now = datetime.now()
-                        
-                        if old and old != last_price:
-                            change = ((last_price - old) / old) * 100
-                            if MIN_PUMP_PERCENT <= abs(change) <= MAX_PUMP_PERCENT:
-                                coin = coins_data.get(symbol, {})
-                                time_diff = (now - coin.get('timestamp', now)).total_seconds()
+                    if price <= 0:
+                        continue
+                    
+                    now = datetime.now()
+                    old_data = coins.get(symbol)
+                    
+                    if old_data:
+                        old_price = old_data.get('price')
+                        if old_price and old_price != price:
+                            change = ((price - old_price) / old_price) * 100
+                            abs_change = abs(change)
+                            
+                            # Перевіряємо діапазон 3% - 50%
+                            if MIN_PUMP <= abs_change <= MAX_PUMP:
+                                last_time = old_data.get('time', now)
+                                time_diff = (now - last_time).total_seconds()
                                 
-                                if time_diff <= TIME_WINDOW_SECONDS:
-                                    count = coin.get('alert_count', 0) + 1
-                                    direction = "🚀🔥 PUMP" if change > 0 else "💀📉 DUMP"
-                                    price_str = f"{last_price:.8f}" if last_price < 1 else f"{last_price:.4f}"
-                                    
-                                    msg = f"{direction}\n━━━━━━━━━━━━━━━━━━━━━\n🪙 {symbol}\n📊 Зміна: {change:+.2f}%\n💰 Ціна: {price_str} USDT\n🕐 {now.strftime('%H:%M:%S')}\n🔄 Сигнал #{count+1}"
-                                    await bot.send_message(chat_id=CHAT_ID, text=msg)
-                                    print(f"✅ {direction} {symbol}: {change:+.2f}%")
-                                
-                                coins_data[symbol] = {'price': last_price, 'timestamp': now, 'alert_count': count if time_diff <= TIME_WINDOW_SECONDS else 0}
+                                # Перевіряємо часове вікно 10 хвилин
+                                if time_diff <= TIME_WINDOW:
+                                    count = old_data.get('count', 0) + 1
+                                    await send_alert(symbol, old_price, price, change, count)
+                                    coins[symbol] = {'price': price, 'time': now, 'count': count}
+                                else:
+                                    coins[symbol] = {'price': price, 'time': now, 'count': 0}
+                            else:
+                                coins[symbol] = {'price': price, 'time': now, 'count': 0}
                         else:
-                            coins_data[symbol] = {'price': last_price, 'timestamp': datetime.now(), 'alert_count': 0}
-            except:
-                continue
+                            coins[symbol] = {'price': price, 'time': now, 'count': 0}
+                    else:
+                        coins[symbol] = {'price': price, 'time': now, 'count': 0}
+                        
+            except Exception as e:
+                print(f"⚠️ Помилка обробки: {e}")
 
+# ============================================
+# ЗАПУСК
+# ============================================
 async def main():
-    await bot.send_message(chat_id=CHAT_ID, text="🤖 PUMP/DUMP Бот запущено!\n📊 Завантажую всі монети...")
-    await listen_bybit()
+    print("=" * 55)
+    print("🤖 PUMP/DUMP МОНІТОРИНГ BYBIT")
+    print("📡 Всі ф'ючерсні монети")
+    print("=" * 55)
+    
+    try:
+        await monitor()
+    except Exception as e:
+        print(f"❌ Критична помилка: {e}")
+        await bot.send_message(chat_id=CHAT_ID, text=f"❌ Помилка: {e}")
+        raise
 
 if __name__ == "__main__":
     asyncio.run(main())
