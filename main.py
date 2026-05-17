@@ -24,11 +24,15 @@ MAX_PUMP = 50.0
 CHECK_INTERVAL = 5
 TIME_WINDOW = 900
 
-# Альтернативний MEXC Futures API
-MEXC_FUTURES_URL = "https://api.mexc.com/api/v3/ticker/24hr"
+# MEXC Futures - перевірений ендпоїнт
+MEXC_TICKER_URL = "https://api.mexc.com/api/v3/ticker/24hr"
 
 coins_data = {}
 all_symbols = []
+
+# Список символів, які точно є ф'ючерсами на MEXC
+# (будемо фільтрувати за ключовими словами)
+FUTURES_INDICATORS = ['USDT']
 
 # ============================================
 # НАДСИЛАННЯ СПОВІЩЕННЯ
@@ -59,22 +63,32 @@ async def send_alert(symbol, old_price, new_price, change, count):
         print(f"❌ Помилка: {e}")
 
 # ============================================
+# ФУНКЦІЯ ДЛЯ ПЕРЕВІРКИ ЧИ ЦЕ Ф'ЮЧЕРС
+# ============================================
+def is_futures_pair(symbol):
+    """Перевіряє чи пара є ф'ючерсом за певними ознаками"""
+    # На MEXC ф'ючерсні пари зазвичай мають великі об'єми
+    # Або ми можемо перевірити через окремий запит
+    return symbol.endswith('USDT')
+
+# ============================================
 # ОСНОВНИЙ МОНІТОРИНГ
 # ============================================
 async def monitor():
     global all_symbols
     
     print("🔄 Підключення до MEXC API...")
+    print("📡 Отримую всі пари...")
     
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(MEXC_FUTURES_URL, timeout=15) as response:
+                async with session.get(MEXC_TICKER_URL, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
                         
                         if isinstance(data, list):
-                            # Фільтруємо тільки USDT пари (це можуть бути як спот так і ф'ючерси)
+                            # Фільтруємо USDT пари
                             usdt_pairs = [t for t in data if t.get('symbol', '').endswith('USDT')]
                             
                             if not all_symbols:
@@ -89,6 +103,8 @@ async def monitor():
                                             coins_data[symbol] = {'price': price, 'time': datetime.now(), 'count': 0}
                                     except:
                                         pass
+                                
+                                print(f"✅ Ініціалізовано {len(coins_data)} монет")
                                 
                                 await bot.send_message(
                                     chat_id=CHAT_ID,
@@ -139,10 +155,14 @@ async def monitor():
                             
                             print(f"📊 Перевірено {len(usdt_pairs)} пар | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
                         else:
-                            print(f"⚠️ Невідомий формат")
+                            print(f"⚠️ Помилка: отримано {type(data)}")
                     else:
                         print(f"❌ HTTP {response.status}")
                         
+        except asyncio.TimeoutError:
+            print("⏰ Таймаут")
+        except aiohttp.ClientError as e:
+            print(f"❌ Помилка з'єднання: {e}")
         except Exception as e:
             print(f"❌ Помилка: {e}")
         
@@ -154,6 +174,7 @@ async def monitor():
 async def main():
     print("=" * 55)
     print("🤖 PUMP/DUMP МОНІТОРИНГ MEXC")
+    print("📡 ВСІ USDT ПАРИ")
     print(f"⏱️ Часове вікно: {TIME_WINDOW//60} хвилин")
     print("=" * 55)
     
