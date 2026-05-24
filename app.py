@@ -15,11 +15,18 @@ CHECK_INTERVAL = 5
 TIME_WINDOW = 900
 
 # BingX Futures API
-BINGX_CONTRACTS_URL = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
 BINGX_PRICE_URL = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
 
+# Список основних ф'ючерсних монет
+all_symbols = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+    "MATICUSDT", "UNIUSDT", "ATOMUSDT", "LTCUSDT", "NEARUSDT",
+    "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT",
+    "PEPEUSDT", "WIFUSDT", "BONKUSDT", "FLOKIUSDT", "SHIBUSDT"
+]
+
 coins_data = {}
-all_symbols = []
 
 async def send_alert(symbol, old_price, new_price, change, count):
     is_pump = change > 0
@@ -39,27 +46,6 @@ async def send_alert(symbol, old_price, new_price, change, count):
     await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
     print(f"✅ {dir_text} {symbol}: {change:+.2f}%")
 
-async def get_all_symbols():
-    """Отримує список ВСІХ USDT-M ф'ючерсів BingX"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(BINGX_CONTRACTS_URL, timeout=15) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('code') == 0:
-                        contracts = data.get('data', [])
-                        symbols = []
-                        for c in contracts:
-                            symbol = c.get('symbol', '')
-                            if symbol.endswith('-USDT'):
-                                symbol = symbol.replace('-', '')
-                                symbols.append(symbol)
-                        print(f"📋 Знайдено {len(symbols)} USDT-M ф'ючерсів на BingX")
-                        return symbols
-    except Exception as e:
-        print(f"❌ Помилка отримання списку: {e}")
-    return None
-
 async def get_price(session, symbol):
     url = f"{BINGX_PRICE_URL}?symbol={symbol}"
     try:
@@ -73,17 +59,7 @@ async def get_price(session, symbol):
     return 0
 
 async def monitor():
-    global all_symbols
-    
-    print("🔄 Отримання списку ВСІХ ф'ючерсів BingX...")
-    
-    # Отримуємо всі ф'ючерсні пари
-    all_symbols = await get_all_symbols()
-    if not all_symbols:
-        print("❌ Не вдалося отримати список, використовую базовий")
-        all_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-    
-    print(f"📡 Починаю моніторинг {len(all_symbols)} USDT-M ф'ючерсів...")
+    print(f"📋 Знайдено {len(all_symbols)} USDT-M ф'ючерсів на BingX")
     
     await bot.send_message(
         chat_id=CHAT_ID,
@@ -100,14 +76,13 @@ async def monitor():
     
     # Ініціалізуємо початкові ціни
     async with aiohttp.ClientSession() as init_session:
-        count = 0
         for symbol in all_symbols:
             price = await get_price(init_session, symbol)
             if price > 0:
                 coins_data[symbol] = {'price': price, 'time': datetime.now(), 'count': 0}
-                count += 1
-            await asyncio.sleep(0.1)  # Невелика затримка
-        print(f"✅ Ініціалізовано {count} ф'ючерсів")
+                print(f"📊 {symbol}: {price}")
+    
+    print(f"✅ Ініціалізовано {len(coins_data)} ф'ючерсів")
     
     while True:
         try:
@@ -148,7 +123,7 @@ async def monitor():
 
 async def main():
     print("=" * 50)
-    print("🤖 PUMP/DUMP BINGX FUTURES (ВСІ МОНЕТИ)")
+    print("🤖 PUMP/DUMP BINGX FUTURES")
     print("=" * 50)
     await monitor()
 
