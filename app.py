@@ -3,6 +3,14 @@ import asyncio
 import aiohttp
 from datetime import datetime
 from telegram import Bot
+from flask import Flask
+
+# Створюємо Flask додаток для Render порту
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
 
 BOT_TOKEN = "8902921890:AAGgdbhGx3KgBsASB6uk3V2WnIJJNy__en4"
 CHAT_ID = "-1003846362726"
@@ -40,7 +48,6 @@ async def send_alert(symbol, old_price, new_price, change, count):
     print(f"✅ {dir_text} {symbol}: {change:+.2f}%")
 
 async def get_all_symbols():
-    """Отримує ВСІ USDT-M ф'ючерсні пари BingX"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(BINGX_CONTRACTS_URL, timeout=15) as response:
@@ -57,7 +64,7 @@ async def get_all_symbols():
                         print(f"📋 Знайдено {len(symbols)} USDT-M ф'ючерсів на BingX")
                         return symbols
     except Exception as e:
-        print(f"❌ Помилка отримання списку: {e}")
+        print(f"❌ Помилка: {e}")
     return None
 
 async def get_price(session, symbol):
@@ -77,9 +84,7 @@ async def monitor():
     
     print("🔄 Отримання списку ВСІХ ф'ючерсів BingX...")
     
-    # Отримуємо всі пари автоматично
     all_symbols = await get_all_symbols()
-    
     if not all_symbols:
         print("❌ Не вдалося отримати список!")
         return
@@ -99,16 +104,13 @@ async def monitor():
         parse_mode='Markdown'
     )
     
-    # Ініціалізуємо початкові ціни
     async with aiohttp.ClientSession() as init_session:
-        count = 0
         for symbol in all_symbols:
             price = await get_price(init_session, symbol)
             if price > 0:
                 coins_data[symbol] = {'price': price, 'time': datetime.now(), 'count': 0}
-                count += 1
             await asyncio.sleep(0.05)
-        print(f"✅ Ініціалізовано {count} ф'ючерсів")
+        print(f"✅ Ініціалізовано {len(coins_data)} ф'ючерсів")
     
     while True:
         try:
@@ -147,11 +149,22 @@ async def monitor():
         
         await asyncio.sleep(CHECK_INTERVAL)
 
-async def main():
+async def run_monitor():
+    await monitor()
+
+def start_flask():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+if __name__ == "__main__":
     print("=" * 50)
     print("🤖 PUMP/DUMP BINGX FUTURES (ВСІ ПАРИ)")
     print("=" * 50)
-    await monitor()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    
+    # Запускаємо моніторинг в окремому потоці
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(run_monitor())
+    
+    # Запускаємо Flask для порту
+    start_flask()
