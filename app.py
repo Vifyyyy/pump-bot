@@ -3,29 +3,25 @@ import asyncio
 import aiohttp
 from datetime import datetime
 from telegram import Bot
-from flask import Flask
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "✅ PUMP/DUMP Bot is running!"
 
 BOT_TOKEN = "8902921890:AAGgdbhGx3KgBsASB6uk3V2WnIJJNy__en4"
 CHAT_ID = "-1003846362726"
 
 bot = Bot(token=BOT_TOKEN)
 
-MIN_PUMP = 3.0
-MAX_PUMP = 50.0
-CHECK_INTERVAL = 5
-TIME_WINDOW = 900
+# ПАРАМЕТРИ МОНІТОРИНГУ
+MIN_PUMP = 2.0          # 2% мінімум (змінено з 3%)
+MAX_PUMP = 50.0         # 50% максимум
+CHECK_INTERVAL = 5      # перевірка кожні 5 секунд
+TIME_WINDOW = 900       # 15 хвилин
 
+# BingX Futures API
 BINGX_CONTRACTS_URL = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
 BINGX_PRICE_URL = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
 
 coins_data = {}
 all_symbols = []
+already_sent = {}  # щоб не дублювати повідомлення
 
 async def send_alert(symbol, old_price, new_price, change, count):
     is_pump = change > 0
@@ -42,10 +38,14 @@ async def send_alert(symbol, old_price, new_price, change, count):
 🔄 Сигнал #{count}
 ━━━━━━━━━━━━━━━━━━━━━
 """
-    await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
-    print(f"✅ {dir_text} {symbol}: {change:+.2f}%")
+    key = f"{symbol}_{change}"
+    if key not in already_sent:
+        already_sent[key] = True
+        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
+        print(f"✅ {dir_text} {symbol}: {change:+.2f}%")
 
 async def get_all_symbols():
+    """Отримує ВСІ USDT-M ф'ючерсні пари BingX"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(BINGX_CONTRACTS_URL, timeout=15) as response:
@@ -62,10 +62,11 @@ async def get_all_symbols():
                         print(f"📋 Знайдено {len(symbols)} USDT-M ф'ючерсів на BingX")
                         return symbols
     except Exception as e:
-        print(f"❌ Помилка: {e}")
+        print(f"❌ Помилка отримання списку: {e}")
     return None
 
 async def get_price(session, symbol):
+    """Отримує поточну ціну"""
     url = f"{BINGX_PRICE_URL}?symbol={symbol}"
     try:
         async with session.get(url, timeout=10) as response:
@@ -88,10 +89,14 @@ async def monitor():
         return
     
     print(f"📡 Починаю моніторинг {len(all_symbols)} USDT-M ф'ючерсів...")
+    print(f"⚡ Діапазон: {MIN_PUMP}% - {MAX_PUMP}% | Часове вікно: {TIME_WINDOW//60} хвилин")
     
-    await bot.send_message(
-        chat_id=CHAT_ID,
-        text=f"""🤖 **PUMP/DUMP Бот (BingX Futures) запущено!**
+    # Відправляємо повідомлення про запуск (тільки один раз)
+    if not already_sent.get("startup"):
+        already_sent["startup"] = True
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"""🤖 **PUMP/DUMP Бот (BingX Futures) запущено!**
 
 📊 **Моніторинг:** {len(all_symbols)} USDT-M ф'ючерсів
 ⚡ **Діапазон:** {MIN_PUMP}% - {MAX_PUMP}%
@@ -99,17 +104,21 @@ async def monitor():
 🔄 **Повторні сигнали:** ✅
 
 🔔 Очікую на стрибки цін...""",
-        parse_mode='Markdown'
-    )
+            parse_mode='Markdown'
+        )
     
+    # Ініціалізуємо початкові ціни
     async with aiohttp.ClientSession() as init_session:
+        count = 0
         for symbol in all_symbols:
             price = await get_price(init_session, symbol)
             if price > 0:
                 coins_data[symbol] = {'price': price, 'time': datetime.now(), 'count': 0}
-            await asyncio.sleep(0.05)
-        print(f"✅ Ініціалізовано {len(coins_data)} ф'ючерсів")
+                count += 1
+            await asyncio.sleep(0.02)  # невелика затримка
+        print(f"✅ Ініціалізовано {count} ф'ючерсів")
     
+    # Основний цикл моніторингу
     while True:
         try:
             async with aiohttp.ClientSession() as session:
@@ -126,9 +135,13 @@ async def monitor():
                         old_price = old['price']
                         if old_price != price:
                             change = ((price - old_price) / old_price) * 100
-                            if MIN_PUMP <= abs(change) <= MAX_PUMP:
+                            abs_change = abs(change)
+                            
+                            if MIN_PUMP <= abs_change <= MAX_PUMP:
                                 last_time = old.get('time', now)
-                                if (now - last_time).total_seconds() <= TIME_WINDOW:
+                                time_diff = (now - last_time).total_seconds()
+                                
+                                if time_diff <= TIME_WINDOW:
                                     cnt = old.get('count', 0) + 1
                                     await send_alert(symbol, old_price, price, change, cnt)
                                     coins_data[symbol] = {'price': price, 'time': now, 'count': cnt}
@@ -140,27 +153,21 @@ async def monitor():
                     elif price > 0:
                         coins_data[symbol] = {'price': price, 'time': now, 'count': 0}
                 
+                if changes > 0:
+                    print(f"📢 Знайдено {changes} змін!")
                 print(f"📊 Перевірено {len(all_symbols)} ф'ючерсів | змін: {changes} | {datetime.now().strftime('%H:%M:%S')}")
                         
         except Exception as e:
-            print(f"❌ Помилка: {e}")
+            print(f"❌ Помилка в циклі: {e}")
         
         await asyncio.sleep(CHECK_INTERVAL)
 
-async def run_monitor():
-    await monitor()
-
-def start_flask():
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
-
-if __name__ == "__main__":
+async def main():
     print("=" * 50)
     print("🤖 PUMP/DUMP BINGX FUTURES (ВСІ ПАРИ)")
+    print("⚡ Мінімальний рух: 2%")
     print("=" * 50)
-    
-    import threading
-    thread = threading.Thread(target=start_flask)
-    thread.start()
-    
-    asyncio.run(run_monitor())
+    await monitor()
+
+if __name__ == "__main__":
+    asyncio.run(main())
