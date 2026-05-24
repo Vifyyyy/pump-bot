@@ -5,12 +5,11 @@ from datetime import datetime
 from telegram import Bot
 from flask import Flask
 
-# Створюємо Flask додаток для Render порту
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "✅ PUMP/DUMP Bot is running!"
 
 BOT_TOKEN = "8902921890:AAGgdbhGx3KgBsASB6uk3V2WnIJJNy__en4"
 CHAT_ID = "-1003846362726"
@@ -22,7 +21,6 @@ MAX_PUMP = 50.0
 CHECK_INTERVAL = 5
 TIME_WINDOW = 900
 
-# BingX Futures API
 BINGX_CONTRACTS_URL = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
 BINGX_PRICE_URL = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
 
@@ -161,10 +159,8 @@ if __name__ == "__main__":
     print("🤖 PUMP/DUMP BINGX FUTURES (ВСІ ПАРИ)")
     print("=" * 50)
     
-    # Запускаємо моніторинг в окремому потоці
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(run_monitor())
+    import threading
+    thread = threading.Thread(target=start_flask)
+    thread.start()
     
-    # Запускаємо Flask для порту
-    start_flask()
+    asyncio.run(run_monitor())
